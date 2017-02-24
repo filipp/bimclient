@@ -1,6 +1,9 @@
+import os
 import json
-import logging
 import base64
+import shelve
+import urllib
+import logging
 import tempfile
 import subprocess
 
@@ -25,14 +28,17 @@ class Session(object):
     """
     Sends a request to the BIM server.
     """
-    url = self.url + method
     params = {}
+    url = self.url + method
+
+    if type(data) is str:
+      data = json.loads(data)
 
     if self.session_id:
       params['session-id'] = self.session_id
 
     if data:
-      self._request = requests.post(url, json=data)
+      self._request = requests.post(url, params=params, json=data)
     else:
       self._request = requests.get(url, params=params)
 
@@ -47,7 +53,14 @@ class Session(object):
       self.response = self._request.json()
     except ValueError:
       raise Exception(self._text)
-    
+
+    if type(self.response) == dict:
+      if self.response.get('error-code'):
+        raise Exception(self.response.get('error-message'))
+
+      if self.response.get('status', 0) == 400:
+        raise Exception(self.response.get('message'))
+
     if method.endswith('get-server-info'):
       self.server = self.response
       self.id = self.response.get('serverId')
@@ -73,30 +86,45 @@ class Session(object):
                             stdout=subprocess.PIPE)
       o, e = p.communicate(password + '00000000')
       password = base64.b64encode(o)
-
       return password
 
   def login(self, username, password):
     """
     Authenticates with the BIM server.
+    Returns self for further queries.
     """
-    self.request('management/latest/get-server-public-key')
-    password = self.encrypt_password(password)
-    d = {'username': username, 'password': password}
-    logging.debug('Auth request: %s' % d)
-    self.request('management/latest/create-session', data=d)
+    db = os.path.join(tempfile.gettempdir(), 'bimclient_db')
+    cache = shelve.open(db)
+    session = cache.get('session')
+
+    if session:
+      logging.debug('Using cached session: %s' % session)
+      self.response = session
+    else:
+      self.request('management/latest/get-server-public-key')
+      password = self.encrypt_password(password)
+      d = {'username': username, 'password': password}
+      self.request('management/latest/create-session', data=d)
+      cache['session'] = self.response
+      cache.close()
+
     logging.debug(self.response)
+
     self.user_id = self.response.get('user-id')
     self.session_id = self.response.get('session-id')
     self.session_timeout = self.response.get('expire-timeout')
 
-    if not self.user_id:
+    if self.user_id:
+      logging.debug('Logged in as %s' % self.user_id)
+    else:
       raise Exception('Authentication failed')
 
     return self
 
   def projects(self):
-    self.request('management/latest/get-projects-by-criterion')
+    data = json.loads('{"$and":[{"$or":[{"$eq":{"id":"projectRoot"}},{"$eq":{"$parentId":"projectRoot"}}]}]}')
+    self.request('management/latest/get-resources-by-criterion', data=data)
+    logging.debug(self.response)
     return self.response
 
 

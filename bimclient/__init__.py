@@ -1,0 +1,5 @@
+__title__ = 'bimclient'
+__version__ = '0.1'
+__author__ = 'Filipp Lepalaan'
+__license__ = 'BSD'
+__copyright__ = 'Copyright 2017 Filipp Lepalaan'
